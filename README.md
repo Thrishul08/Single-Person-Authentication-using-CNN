@@ -24,6 +24,9 @@ requirements.txt - required libraries for the project <br>
 
 <b>Initial Commit:</b><br>
 Used cosine similarity for comparing the features. <br>
-<i>problem:</i> focusing on the background features as well instead of just face.
+<i>problem:</i> focusing on the background features as well instead of just face.<br>
+
+<b>Removed Background features:</b><br>
+Now the model will only extract the face features,this is done using opencv's haar cascade.<br>
 
 
