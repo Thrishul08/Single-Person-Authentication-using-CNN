@@ -40,4 +40,4 @@ def store_dataset_images(dataset_dir):
                 print(f"Stored {image_file} for {username}")
 
 # Usage: Call the function with the path to your dataset
-store_dataset_images("Extracted faces/Extracted Faces")
+store_dataset_images("../Extracted faces/Extracted Faces")

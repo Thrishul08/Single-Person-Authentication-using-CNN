@@ -1,24 +1,22 @@
-# press space to capture
-
 import cv2
 import numpy as np
-import pymongo
 from tensorflow.keras.models import load_model
-from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics.pairwise import cosine_similarity
-from bson.binary import Binary
+import pymongo
 
-# MongoDB connection
+IMAGE_SIZE = (128, 128)
+THRESHOLD = 0.5 
+
+# Load the pre-trained face recognition model
+model = load_model('face_cnn_model.h5')
+
+# Connect to MongoDB
 client = pymongo.MongoClient("mongodb://localhost:27017/")
 db = client["FaceDB"]
 collection = db["images"]
 
-# Constants
-IMAGE_SIZE = (128, 128)
-THRESHOLD = 0.7
-
-# Load the pre-trained model
-model = load_model('face_cnn_model.h5')
+# Load the Haar cascade for face detection
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
 def load_images_from_mongodb():
     X = []
@@ -27,36 +25,47 @@ def load_images_from_mongodb():
 
     for user in collection.distinct("username"):
         images = collection.find({"username": user})
+        label_map[user] = user
 
         for img_data in images:
             img_bytes = np.frombuffer(img_data['image_data'], dtype=np.uint8)
             img = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
-            img = cv2.resize(img, IMAGE_SIZE)
 
-            X.append(img)
-            y.append(user)
+            # Detect and crop the face
+            face = detect_and_crop_face(img)
+            if face is not None:
+                X.append(face)
+                y.append(user)
 
-    X = np.array(X)
-    y = np.array(y)
+    return np.array(X), np.array(y), label_map
 
-    # Encode labels
-    encoder = LabelEncoder()
-    y_encoded = encoder.fit_transform(y)
-    label_map = {idx: label for idx, label in enumerate(encoder.classes_)}
-    
-    return X, y_encoded, label_map, encoder
+def detect_and_crop_face(image):
+    # Convert to grayscale for face detection
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+
+    # If a face is detected, crop to the face region
+    for (x, y, w, h) in faces:
+        face = image[y:y+h, x:x+w]
+        face = cv2.resize(face, IMAGE_SIZE)
+        return face
+    return None
 
 def preprocess_image(image):
-    img = cv2.resize(image, IMAGE_SIZE)
-    img = img.astype('float32') / 255.0  
-    img = np.expand_dims(img, axis=0)
-    return img
+    face = detect_and_crop_face(image)
+    if face is not None:
+        face = face.astype('float32') / 255.0  # Normalize pixel values
+        face = np.expand_dims(face, axis=0)  # Add batch dimension
+        return face
+    else:
+        print("No face detected.")
+        return None
 
 def capture_face_from_webcam():
     cam = cv2.VideoCapture(0)
     cv2.namedWindow("Capture Face")
 
-    print("Press SPACE to capture the face")
+    print("Press SPACE to capture the face image")
     while True:
         ret, frame = cam.read()
         if not ret:
@@ -64,7 +73,7 @@ def capture_face_from_webcam():
             break
         cv2.imshow("Capture Face", frame)
 
-        if cv2.waitKey(1) % 256 == 32:  
+        if cv2.waitKey(1) % 256 == 32:  # SPACE pressed
             print("Captured image from webcam.")
             cam.release()
             cv2.destroyAllWindows()
@@ -75,41 +84,46 @@ def capture_face_from_webcam():
     return None
 
 def authenticate_user():
-    # Load stored images, labels, and mappings
-    stored_images, stored_labels, label_map, encoder = load_images_from_mongodb()
+    # Load stored images and labels from MongoDB
+    stored_images, stored_labels, label_map = load_images_from_mongodb()
 
-    # Capture and preprocess image from webcam
+    # Capture an image from the webcam
     captured_image = capture_face_from_webcam()
     if captured_image is None:
         print("Failed to capture image from webcam.")
         return
 
+    # Preprocess the captured image
     captured_image_preprocessed = preprocess_image(captured_image)
+    if captured_image_preprocessed is None:
+        print("No face detected in the captured image.")
+        return
+
+    # Extract features from the captured image
     captured_features = model.predict(captured_image_preprocessed)
 
-    # Initialize best match variables
     best_match_user = None
-    best_match_score = -1  # For cosine similarity, we seek the highest score
+    best_match_score = float('-inf')
 
-    # Compare against stored images using cosine similarity
+    # Compare with stored images
     for idx, stored_img in enumerate(stored_images):
         stored_img_preprocessed = preprocess_image(stored_img)
-        stored_features = model.predict(stored_img_preprocessed)
+        if stored_img_preprocessed is None:
+            continue
 
-        # Calculate cosine similarity
+        stored_features = model.predict(stored_img_preprocessed)
         similarity_score = cosine_similarity(captured_features, stored_features)[0][0]
 
-        # Update best match if a higher similarity score is found
         if similarity_score > best_match_score:
             best_match_score = similarity_score
             best_match_user = stored_labels[idx]
 
-    # Check against threshold for authentication
-    if best_match_score >= THRESHOLD:
-        user_label = encoder.inverse_transform([best_match_user])[0]
-        print(f"Authentication successful! User: {user_label}")
+    # Check if the similarity score passes the threshold
+    if best_match_score > THRESHOLD:
+        print(f"Authentication successful! User: {best_match_user}")
     else:
         print("Authentication failed. No matching user found.")
 
+# Run authentication
 if __name__ == "__main__":
     authenticate_user()
